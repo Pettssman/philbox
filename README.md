@@ -1,4 +1,5 @@
 # philbox
+philbox contains scripts that I use for different purposes.
 
 ## Gitophil
 Gitophil is used as a git tool to create branches, commits and PRs. Copilot is integrated in the script and will give suggestions for branch names, commit messages and PR titles (if only one commit, then commit message will be used as PR title).
