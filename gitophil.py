@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import subprocess
-import sys
+import os
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from prompt_toolkit import prompt as pt_prompt
@@ -12,11 +12,14 @@ DEBUG = False
 # ─── Workflow presets ────────────────────────────────────────────────
 # Each preset maps to a set of step keys that will run automatically.
 WORKFLOWS = {
-    "Full workflow":   {"branch", "commit", "rebase", "push", "create_pr", "automerge"},
+    "Full workflow":   {"branch", "commit", "rebase", "push", "create_pr", "automerge", "switch to main"},
+    "Full workflow, no AI":   {"branch", "commit", "rebase", "push", "create_pr", "automerge", "switch to main"},
     "Commit only":     {"commit"},
     "Push & PR":       {"push", "create_pr"},
     "Custom":          None,   # user picks steps interactively
 }
+
+NO_AI_WORKFLOWS = {"Full workflow, no AI"}
 
 ALL_STEPS = [
     ("branch",    "Create branch"),
@@ -39,7 +42,7 @@ def run(command, capture_output=False, shell=True):
     result = subprocess.run(command, shell=shell, text=True, capture_output=capture_output)
     if result.returncode != 0:
         print(f"Command failed: {command}")
-        sys.exit(1)
+        os._exit(1)
     return result.stdout.strip() if capture_output else None
 
 
@@ -121,7 +124,11 @@ def step_create_branch(branchname_future):
     """Create and switch to a new branch from main."""
     current_branch = run("git branch --show-current", capture_output=True)
     if current_branch != "main":
-        run("git switch main", capture_output=True)
+        try:
+            run("git switch main", capture_output=True)
+        except SystemExit:
+            print("Create branch was in workflow but could not switch to main")
+            os._exit(1)
 
     branchname_cp = branchname_future.result()
     branchname = pt_prompt("Enter branch name: ", default=branchname_cp).strip()
@@ -137,7 +144,7 @@ def step_commit(commitmsg_future):
     commitmsg = pt_prompt("Enter commit message: ", default=commitmsg).strip()
     if not commitmsg:
         print("Empty commit message, aborting.")
-        sys.exit(1)
+        os._exit(1)
     run("git add .")
     run(f'git commit -m "{commitmsg}"')
     return commitmsg
@@ -150,7 +157,7 @@ def step_rebase():
         run("git rebase origin/main")
     except SystemExit:
         print("Failed to rebase")
-        sys.exit(1)
+        os._exit(1)
 
 
 def step_push():
@@ -170,7 +177,7 @@ def step_create_pr(pr_title_future, draft=False):
     template_path = Path("./pull_request_template.md")
     if not template_path.exists():
         print("PR template not found.")
-        sys.exit(1)
+        os._exit(1)
 
     pr_template = template_path.read_text(encoding="utf-8-sig")
     pr_body = f"{prdesc}\n\n{pr_template}"
@@ -196,19 +203,28 @@ def step_automerge():
     else:
         run("gh pr merge --squash --auto --delete-branch")
 
+def step_switch_to_main():
+    """Switch to main"""
+    run("git switch main")
+
 
 # ─── Menu & orchestration ───────────────────────────────────────────
 
 def choose_workflow():
     """Present the main menu and return the set of steps to execute."""
-    workflow = questionary.rawselect(
+    current_branch = run("git branch --show-current", capture_output=True)
+    if current_branch == "main":
+        _workflows = WORKFLOWS.keys()
+    else:
+        _workflows = [wf for wf in WORKFLOWS.keys() if "full workflow" not in wf.lower()]  # Do not offer full workflow if not on main
+    workflow = questionary.select(
         "What would you like to do?",
-        choices=list(WORKFLOWS.keys()),
+        choices=list(_workflows),
         instruction="(arrow keys to move, enter to select)",
     ).ask()
 
     if workflow is None:  # Ctrl-C
-        sys.exit(0)
+        os._exit(0)
 
     if workflow == "Custom":
         selected = questionary.checkbox(
@@ -220,10 +236,10 @@ def choose_workflow():
             instruction="(space to toggle, enter to confirm)",
         ).ask()
         if selected is None:
-            sys.exit(0)
+            os._exit(0)
         return set(selected)
 
-    return WORKFLOWS[workflow]
+    return WORKFLOWS[workflow], workflow
 
 def num_commits():
     result = subprocess.run(
@@ -239,11 +255,15 @@ def main():
     branchname_future = executor.submit(generate_branchname)
     commitmsg_future = executor.submit(generate_commitmessage)
 
-    selected_steps = choose_workflow()
+    selected_steps, workflow = choose_workflow()
+    use_ai = workflow not in NO_AI_WORKFLOWS
     print(f"\n→ Steps: {', '.join(s for s, _ in ALL_STEPS if s in selected_steps)}\n")
 
-    # Track commit message for PR title default
-    commitmsg = ""
+    if not use_ai:
+        branchname_future.cancel()
+        commitmsg_future.cancel()
+        branchname_future = executor.submit(lambda: "")
+        commitmsg_future = executor.submit(lambda: "")
 
     if "branch" in selected_steps:
         step_create_branch(branchname_future)
@@ -253,7 +273,7 @@ def main():
     else:
         commitmsg = run("git log -1 --pretty=%s", capture_output=True)
 
-    if num_commits() > 1:
+    if num_commits() > 1 and use_ai:
         pr_title_future = executor.submit(generate_pr_title)
     else:
         pr_title_future = executor.submit(lambda: commitmsg)
@@ -270,12 +290,16 @@ def main():
 
     if "automerge" in selected_steps:
         step_automerge()
+    
+    if "switch to main" in selected_steps:
+        step_switch_to_main()
 
     print("\nDone!")
+    os._exit(0)
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        sys.exit(1)
+        os._exit(1)
