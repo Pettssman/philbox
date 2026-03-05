@@ -6,6 +6,8 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from prompt_toolkit import prompt as pt_prompt
 import questionary
+import json
+import urllib.request
 
 DEBUG = False
 
@@ -184,6 +186,7 @@ def step_create_pr(pr_title_future, draft=False):
 
     if DEBUG:
         print(f"[debug] PR body:\n{pr_body}")
+        return ""
     else:
         create_cmd = ["gh", "pr", "create", "--title", pr_title, "--body", pr_body]
         if draft:
@@ -191,9 +194,10 @@ def step_create_pr(pr_title_future, draft=False):
         run(create_cmd, shell=False)
 
         pr_url = run("gh pr view --json url --jq .url", capture_output=True)
-        formatted_link = f"{pr_title}: {pr_url}"
+        formatted_link = f"[{pr_url}]({pr_url})"
         subprocess.run("clip", text=True, input=formatted_link, shell=True)
         print(f"PR link copied: {formatted_link}")
+        return formatted_link
 
 
 def step_automerge():
@@ -206,6 +210,43 @@ def step_automerge():
 def step_switch_to_main():
     """Switch to main"""
     run("git switch main")
+
+
+def send_pr_notification(pr_text):
+    """Send an adaptive card notification to Power Automate via webhook."""
+    webhook_url = (
+        "https://defaulta2382087a0e843a695b848ff2a1838.0b.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/2668a84f50fd404f900c0a7d0411c21d/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=wAFSNR2V3oxDik-KGgcrNx98VHJoUSTQ4_DdnUDnCzY"
+    )
+    payload = {
+        "attachments": [
+            {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.4",
+                    "body": [
+                        {
+                            "type": "TextBlock",
+                            "text": pr_text
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        webhook_url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            print(f"Webhook sent ({resp.status})")
+    except Exception as e:
+        print(f"Webhook failed: {e}")
 
 
 # ─── Menu & orchestration ───────────────────────────────────────────
@@ -250,6 +291,7 @@ def num_commits():
 
 
 def main():
+    # send_pr_notification("[PR URL](https://www.youtube.com/watch?v=dQw4w9WgXcQ)") # Rick roll
     # Kick off AI suggestions in background for any steps that need them
     executor = ThreadPoolExecutor(max_workers=3)
     branchname_future = executor.submit(generate_branchname)
@@ -286,7 +328,9 @@ def main():
 
     if "create_pr" in selected_steps:
         draft = questionary.confirm("Create as draft PR?", default=False).ask()
-        step_create_pr(pr_title_future, draft=draft)
+        pr_link = step_create_pr(pr_title_future, draft=draft)
+        if not draft:
+            send_pr_notification(pr_link)
 
     if "automerge" in selected_steps:
         step_automerge()
@@ -296,7 +340,6 @@ def main():
 
     print("\nDone!")
     os._exit(0)
-
 
 if __name__ == "__main__":
     try:
