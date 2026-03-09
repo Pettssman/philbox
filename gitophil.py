@@ -11,34 +11,38 @@ import json
 import urllib.request
 import sys
 import threading
+import tomllib
+import tomli_w
 
 DEBUG = False
-CONFIG_PATH = Path(sys.executable).parent / "gitophil_config.json" if getattr(sys, 'frozen', False) else Path(__file__).parent / "gitophil_config.json"
+CONFIG_PATH = Path(sys.executable).parent / "gitophil_config.toml" if getattr(sys, 'frozen', False) else Path(__file__).parent / "gitophil_config.toml"
+CONFIG = {}
 
 # ─── Workflow presets ────────────────────────────────────────────────
 # Each preset maps to a set of step keys that will run automatically.
-WORKFLOWS = {
-    "Full workflow":   {"branch", "commit", "rebase", "push", "create_pr", "automerge", "switch to main"},
-    "Full workflow, no AI":   {"branch", "commit", "rebase", "push", "create_pr", "automerge", "switch to main"},
-    "Create branch, commit":   {"branch", "commit"},
-    "Commit only":     {"commit"},
-    "Push & PR":       {"push", "create_pr"},
-    "Cleanup branches": {"cleanup_branches"},
-    "Custom":          None,   # user picks steps interactively
+DEFAULT_WORKFLOWS = {
+    "Full workflow":   ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"],
+    "Full workflow, no AI":   ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"],
+    "Create branch, commit":   ["branch", "commit"],
+    "Commit only":     ["commit"],
+    "Push & PR":       ["push", "create pr"],
+    "Cleanup branches": ["cleanup_branches"],
+    "Custom":          [],   # user picks steps interactively
 }
 
 NO_AI_WORKFLOWS = {"Full workflow, no AI"}
 
-ALL_STEPS = [
-    ("branch",    "Create branch"),
-    ("commit",    "Commit changes"),
-    ("rebase",    "Rebase on origin/main"),
-    ("push",      "Push branch"),
-    ("create_pr", "Create PR"),
-    ("automerge", "Auto-merge PR"),
-    ("switch to main", "Switch to main branch"),
-    ("cleanup_branches", "Cleanup gone branches"),
-]
+AVAILABLE_GIT_OPERATIONS = {
+    "branch":    "Create branch",
+    "commit":    "Commit changes",
+    "rebase":    "Rebase on origin/main",
+    "push":      "Push branch",
+    "create pr": "Create PR",
+    "send webhook": "Send webhook",
+    "automerge": "Auto-merge PR",
+    "switch to main": "Switch to main branch",
+    "cleanup_branches": "Cleanup gone branches",
+}
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────
@@ -50,7 +54,11 @@ def confirm(message):
 
 def prompt(message, **kwargs):
     """Wrapper around pt_prompt that renders the message in cyan."""
-    return pt_prompt(HTML(f"<cyan>{message}</cyan>"), **kwargs).strip()
+    response = pt_prompt(HTML(f"<cyan>{message}</cyan>"), **kwargs).strip()
+    if not response:
+        print("Input cannot be empty")
+        return prompt(message, **kwargs)
+    return response
 
 def run(command, capture_output=False, shell=False, input=None):
     result = subprocess.run(command, shell=shell, text=True, capture_output=capture_output, input=input)
@@ -62,7 +70,7 @@ def run(command, capture_output=False, shell=False, input=None):
 
 def send_pr_notification(notification_text):
     """Send an adaptive card notification to Power Automate via webhook."""
-    webhook_url = json.loads(CONFIG_PATH.read_text())["Webhook_URL"]
+    webhook_url = CONFIG.get("Webhook_URL")
     payload = {
         "attachments": [
             {
@@ -274,7 +282,7 @@ def step_create_pr(pr_title_future, draft=False, use_ai=False):
         run(create_cmd, shell=False)
 
         pr_url = run(["gh", "pr", "view", "--json", "url", "--jq", ".url"], capture_output=True)
-        name = json.loads(CONFIG_PATH.read_text())["Name"]
+        name = CONFIG.get("Name", "John Doe")
         formatted_link = f"{name}: [{pr_title}]({pr_url})"
         run(["clip"], input=pr_url, shell=True)
         print(f"PR link copied: {pr_url}")
@@ -328,10 +336,9 @@ def step_cleanup_branches():
 def choose_workflow():
     """Present the main menu and return the set of steps to execute."""
     current_branch = run(["git", "branch", "--show-current"], capture_output=True)
-    if current_branch == "main":
-        _workflows = WORKFLOWS.keys()
-    else:
-        _workflows = [wf for wf in WORKFLOWS if "branch" not in (WORKFLOWS[wf] or set())]
+    _workflows = CONFIG.get("Workflows", DEFAULT_WORKFLOWS)
+    if current_branch != "main":
+        _workflows = [wf for wf in _workflows if "branch" not in (_workflows[wf] or set())]
     workflow = questionary.select(
         "What would you like to do?",
         choices=list(_workflows),
@@ -346,7 +353,7 @@ def choose_workflow():
             "Pick the steps to run:",
             choices=[
                 questionary.Choice(title=label, value=key)
-                for key, label in ALL_STEPS
+                for key, label in AVAILABLE_GIT_OPERATIONS.items()
             ],
             instruction="(space to toggle, enter to confirm)",
         ).ask()
@@ -354,15 +361,15 @@ def choose_workflow():
             os._exit(0)
         return set(selected), workflow
 
-    if "commit" in WORKFLOWS[workflow] and subprocess.run(["git", "diff", "--quiet"], capture_output=True).returncode == 0:
+    if "commit" in _workflows[workflow] and subprocess.run(["git", "diff", "--quiet"], capture_output=True).returncode == 0:
         print("No changes to commit, but 'commit' step was selected. Aborting.")
         os._exit(0)
 
-    return WORKFLOWS[workflow], workflow
+    return _workflows[workflow], workflow
 
 def num_commits():
     result = run(
-    ["git", "rev-list", "--count", "main..HEAD"],
+    ["git", "rev-list", "--count", "origin/main..HEAD"],
     capture_output=True)
     return int(result)  
 
@@ -374,9 +381,18 @@ def init_config():
         default_config = {
             "Name": name,
             "Webhook_URL": webhook_url,
+            "Workflows": DEFAULT_WORKFLOWS,
+            "No_AI_Workflows": list(NO_AI_WORKFLOWS),
+            "Available_Git_Operations": AVAILABLE_GIT_OPERATIONS,
         }
-        CONFIG_PATH.write_text(json.dumps(default_config, indent=4))
-        print(f"Created gitophil_config.json at {CONFIG_PATH}", flush=True)
+        with open(CONFIG_PATH, "wb") as f:
+            tomli_w.dump(default_config, f)
+        
+        print(f"Created gitophil_config.toml at {CONFIG_PATH}", flush=True)
+    
+    with open(CONFIG_PATH, "rb") as f:
+        global CONFIG
+        CONFIG = tomllib.load(f)
 
 def main():
     init_config()
@@ -388,7 +404,7 @@ def main():
 
     selected_steps, workflow = choose_workflow()
     use_ai = workflow not in NO_AI_WORKFLOWS
-    print(f"\nSteps: {', '.join(s for s, _ in ALL_STEPS if s in selected_steps)}\n")
+    print(f"\nSteps: {', '.join(AVAILABLE_GIT_OPERATIONS[s] for s in selected_steps)}\n")
 
     if not use_ai:
         branchname_future.cancel()
@@ -417,10 +433,10 @@ def main():
     if "push" in selected_steps:
         step_push()
 
-    if "create_pr" in selected_steps:
+    if "create pr" in selected_steps:
         draft = questionary.confirm("Create as draft PR?", default=False, instruction="(Enter for No)").ask()
         pr_link = step_create_pr(pr_title_future, draft=draft, use_ai=False)
-        if not draft:
+        if not draft and "send webhook" in selected_steps:
             send_pr_notification(pr_link)
 
     if "automerge" in selected_steps:

@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# User
+gitophil_config.toml
+
 # C extensions
 *.so
 
