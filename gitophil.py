@@ -14,7 +14,7 @@ import threading
 import tomllib
 import tomli_w
 
-DEBUG = False
+DEBUG = True
 CONFIG_PATH = Path(sys.executable).parent / "gitophil_config.toml" if getattr(sys, 'frozen', False) else Path(__file__).parent / "gitophil_config.toml"
 CONFIG = {}
 
@@ -125,8 +125,8 @@ def wait_with_loading(future, message="Loading AI suggestion"):
 # ─── AI generation ───────────────────────────────────────────────────
 
 def generate_branchname():
-    diff = run(["bash", "-c", "git diff --unified=0 | grep -E '^[+-]'"], 
-               capture_output=True)
+    diff = run("git diff --unified=0 | grep -E '^[+-]'", 
+               capture_output=True, shell=True)
     if not diff: 
         return ""
     prompt_text = f"""Role: Git branch name generator.
@@ -151,8 +151,8 @@ Output: branch name only, nothing else."""
 
 
 def generate_commitmessage():
-    diff = run(["bash", "-c", "git diff --unified=0 | grep -E '^[+-]'"], 
-               capture_output=True)
+    diff = run("git diff --unified=0 | grep -E '^[+-]'", 
+               capture_output=True, shell=True)
     prompt_text = f"""Role: Git commit message generator.
 
 Rules:
@@ -175,8 +175,8 @@ Output: commit message only, nothing else."""
 
 
 def generate_pr_title():
-    diff = run(["bash", "-c", "git diff main... --unified=0 | grep -E '^[+-]'"], 
-               capture_output=True)
+    diff = run("git diff main... --unified=0 | grep -E '^[+-]'", 
+               capture_output=True, shell=True)
     if not diff:
         return ""
     prompt_text = f"""Role: GitHub pull request title generator.
