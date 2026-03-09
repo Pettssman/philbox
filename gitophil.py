@@ -109,10 +109,11 @@ def wait_with_loading(future, message="Loading AI suggestion"):
     def animate():
         dots = 0
         while not stop.is_set():
-            print(f"\r{message}{'.' * dots}   ", end="", flush=True)
+            # 
+            print(f"\r{message}{'.' * dots} {' ' * (10 - dots)}", end="", flush=True)
             dots = (dots + 1) % 5
             stop.wait(0.3)
-        print(f"\r{' ' * (len(message) + 10)}\r", end="", flush=True)
+        print(f"\r{' ' * (len(message) + 100)}\r", end="", flush=True)
 
     t = threading.Thread(target=animate, daemon=True)
     t.start()
