@@ -4,14 +4,14 @@ philbox contains scripts that I use for different purposes.
 ## Gitophil
 Gitophil is used as a git tool to create branches, commits and PRs. Copilot is integrated in the script and will give suggestions for branch names, commit messages and PR titles (if only one commit, then commit message will be used as PR title). The link to the PR can then be pubished to a teams chat via a webhook.
 
-Download the .exe file under releases in github and place it under for example "~/tools/gitophil.exe".\
-Then run the following command inside of the repository to bind the executable to the alias "gitophil", the alias can be set to whatever you want:\
-`git config --local alias.gitophil '!PATH_TO_FILE/gitophil.exe'`
+1. Download the .exe file under releases in github and place it under for example "~/tools/gitophil.exe".\
+2. Mark the file in the file explorer and press ctrl+shift+c to copy the full path
+3. Run it in git bash
 
-Then run `git gitophil` to launch the program. You will be asked to give:
-
+You will be asked to provide:
 1. Your name that is used for PR notification in Teams.
 2. A webhook URL that allows to publish a message in a Teams chat.
+3. If you want to create a git alias to be able to run using, for example ´git gitophil´ to launch the CLI
 
 ### How to generate a webhook URL
 To generate a webhook URL, right-click a Teams chat and press "Workflows". Then search for "Send webhook alerts to a chat" and create that workflow and then you will be able to copy the link to that webhook.
