@@ -1,5 +1,5 @@
 # Gitophil
-Gitophil is used as a git tool to create branches, commits and PRs. Copilot is integrated in the script and will give suggestions for branch names, commit messages and PR titles (if only one commit, then commit message will be used as PR title). The link to the PR can then be pubished to a teams chat via a webhook.
+Gitophil is used as a git tool to create branches, commits and PRs. Copilot is integrated in the script and will give suggestions for branch names, commit messages and PR titles (if only one commit, then commit message will be used as PR title). The link to the PR can then be published to a teams chat via a webhook.
 
 1. Download the .exe file located in the ```dist``` directory in github and place it under for example ```~/tools/gitophil.exe```.
 2. Select the file in Windows file explorer and press ```ctrl+shift+c``` to copy the full path
