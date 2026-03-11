@@ -6,12 +6,14 @@ Gitophil is used as a git tool to create branches, commits and PRs. Copilot is i
 
 1. Download the .exe file under releases in github and place it under for example "~/tools/gitophil.exe".\
 2. Mark the file in the file explorer and press ctrl+shift+c to copy the full path
-3. Run it in git bash
+3. Open git bash and paste the path and run.
 
 You will be asked to provide:
 1. Your name that is used for PR notification in Teams.
 2. A webhook URL that allows to publish a message in a Teams chat.
 3. If you want to create a git alias to be able to run using, for example ´git gitophil´ to launch the CLI
+
+After the alias is created, the alias should be able to run in either powershell or git bash (as long as git is in your PATH).
 
 ### How to generate a webhook URL
 To generate a webhook URL, right-click a Teams chat and press "Workflows". Then search for "Send webhook alerts to a chat" and create that workflow and then you will be able to copy the link to that webhook.
