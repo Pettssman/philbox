@@ -14,8 +14,9 @@ import threading
 import tomllib
 import tomli_w
 
-DEBUG = True
+DEBUG = False
 CONFIG_PATH = Path(sys.executable).parent / "gitophil_config.toml" if getattr(sys, 'frozen', False) else Path(__file__).parent / "gitophil_config.toml"
+FILE_PATH = Path(sys.executable).resolve() if getattr(sys, 'frozen', False) else Path(__file__).resolve()
 CONFIG = {}
 
 # ─── Workflow presets ────────────────────────────────────────────────
@@ -23,9 +24,10 @@ CONFIG = {}
 DEFAULT_WORKFLOWS = {
     "Full workflow":   ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"],
     "Full workflow, no AI":   ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"],
+    "Full workflow, draft PR":   ["branch", "commit", "rebase", "push", "create draft pr", "send webhook", "automerge", "switch to main"],
     "Create branch, commit":   ["branch", "commit"],
     "Commit only":     ["commit"],
-    "Push & PR":       ["push", "create pr"],
+    "Push & PR":       ["push", "create pr", "send webhook"],
     "Cleanup branches": ["cleanup_branches"],
     "Custom":          [],   # user picks steps interactively
 }
@@ -38,6 +40,7 @@ AVAILABLE_GIT_OPERATIONS = {
     "rebase":    "Rebase on origin/main",
     "push":      "Push branch",
     "create pr": "Create PR",
+    "create draft pr": "Create draft PR",
     "send webhook": "Send webhook",
     "automerge": "Auto-merge PR",
     "switch to main": "Switch to main branch",
@@ -61,7 +64,7 @@ def prompt(message, **kwargs):
     return response
 
 def run(command, capture_output=False, shell=False, input=None):
-    result = subprocess.run(command, shell=shell, text=True, capture_output=capture_output, input=input)
+    result = subprocess.run(command, shell=shell, text=True, capture_output=capture_output, input=input, encoding="utf-8")
     if result.returncode > 1:  # git diff returns 1 when there are changes, which is fine
         print(f"Command failed: {command}")
         os._exit(1)
@@ -126,8 +129,10 @@ def wait_with_loading(future, message="Loading AI suggestion"):
 # ─── AI generation ───────────────────────────────────────────────────
 
 def generate_branchname():
-    diff = run("git diff --unified=0 | grep -E '^[+-]'", 
-               capture_output=True, shell=True)
+    full_diff = run(["git", "diff", "--unified=0"], capture_output=True)
+    if not full_diff:
+        return ""
+    diff = "\n".join(l for l in full_diff.splitlines() if l.startswith(("+", "-")))
     if not diff: 
         return ""
     prompt_text = f"""Role: Git branch name generator.
@@ -152,8 +157,8 @@ Output: branch name only, nothing else."""
 
 
 def generate_commitmessage():
-    diff = run("git diff --unified=0 | grep -E '^[+-]'", 
-               capture_output=True, shell=True)
+    full_diff = run(["git", "diff", "--unified=0"], capture_output=True)
+    diff = "\n".join(l for l in (full_diff or "").splitlines() if l.startswith(("+", "-")))
     prompt_text = f"""Role: Git commit message generator.
 
 Rules:
@@ -176,8 +181,10 @@ Output: commit message only, nothing else."""
 
 
 def generate_pr_title():
-    diff = run("git diff main... --unified=0 | grep -E '^[+-]'", 
-               capture_output=True, shell=True)
+    full_diff = run(["git", "diff", "main...", "--unified=0"], capture_output=True)
+    if not full_diff:  
+        return ""
+    diff = "\n".join(l for l in full_diff.splitlines() if l.startswith(("+", "-")))
     if not diff:
         return ""
     prompt_text = f"""Role: GitHub pull request title generator.
@@ -260,10 +267,11 @@ def step_create_pr(pr_title_future, draft=False, use_ai=False):
     """Create a pull request via gh CLI and copy link to clipboard."""
     if use_ai:
         pr_title = wait_with_loading(pr_title_future, "Loading AI PR title suggestion")
+        pr_title = prompt("Enter PR title: ", default=pr_title)
+        prdesc = prompt("Enter PR description: ", default=pr_title)
     else:
         pr_title = pr_title_future.result()
-    pr_title = prompt("Enter PR title: ", default=pr_title)
-    prdesc = prompt("Enter PR description: ", default=pr_title)
+        prdesc = pr_title
 
     template_path = Path("./pull_request_template.md")
     if not template_path.exists():
@@ -339,7 +347,7 @@ def choose_workflow():
     current_branch = run(["git", "branch", "--show-current"], capture_output=True)
     _workflows = CONFIG.get("Workflows", DEFAULT_WORKFLOWS)
     if current_branch != "main":
-        _workflows = [wf for wf in _workflows if "branch" not in (_workflows[wf] or set())]
+        _workflows = {wf: steps for wf, steps in _workflows.items() if "branch" not in (steps or [])}
     workflow = questionary.select(
         "What would you like to do?",
         choices=list(_workflows),
@@ -390,6 +398,11 @@ def init_config():
             tomli_w.dump(default_config, f)
         
         print(f"Created gitophil_config.toml at {CONFIG_PATH}", flush=True)
+
+        if questionary.confirm("Do you want to add a git alias for gitophil?").ask():
+            alias = prompt("Enter the alias command (e.g. 'gitophil' or 'op'): ")
+            run(["git", "config", "--global", f"alias.{alias}", f"!\"{FILE_PATH}\""])
+            print(f"Git alias 'git {alias}' created for gitophil.")
     
     with open(CONFIG_PATH, "rb") as f:
         global CONFIG
@@ -435,8 +448,8 @@ def main():
         step_push()
 
     if "create pr" in selected_steps:
-        draft = questionary.confirm("Create as draft PR?", default=False, instruction="(Enter for No)").ask()
-        pr_link = step_create_pr(pr_title_future, draft=draft, use_ai=False)
+        draft = "create draft pr" in selected_steps
+        pr_link = step_create_pr(pr_title_future, draft=draft, use_ai=use_ai)
         if not draft and "send webhook" in selected_steps:
             send_pr_notification(pr_link)
 

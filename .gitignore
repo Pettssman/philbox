@@ -4,7 +4,7 @@ __pycache__/
 *$py.class
 
 # User
-gitophil_config.toml
+*.toml
 
 # C extensions
 *.so
@@ -13,7 +13,6 @@ gitophil_config.toml
 .Python
 build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
