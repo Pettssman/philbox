@@ -22,7 +22,8 @@ CONFIG = {}
 # ─── Workflow presets ────────────────────────────────────────────────
 # Each preset maps to a set of step keys that will run automatically.
 DEFAULT_WORKFLOWS = {
-    "Full workflow":   ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"],
+    "Full workflow, commit all":   ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"],
+    "Full workflow, stash":   ["stash", "branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main", "stash pop"],
     "Full workflow, no AI":   ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"],
     "Full workflow, draft PR":   ["branch", "commit", "rebase", "push", "create draft pr", "send webhook", "automerge", "switch to main"],
     "Create branch, commit":   ["branch", "commit"],
@@ -35,6 +36,7 @@ DEFAULT_WORKFLOWS = {
 NO_AI_WORKFLOWS = {"Full workflow, no AI"}
 
 AVAILABLE_GIT_OPERATIONS = {
+    "stash":     "Stash changes, pop after execution",
     "branch":    "Create branch",
     "commit":    "Commit changes",
     "rebase":    "Rebase on origin/main",
@@ -208,6 +210,31 @@ Output: PR title only, nothing else."""
     return result
 
 # ─── Individual step functions ───────────────────────────────────────
+
+def step_stash():
+    diff_tracked = run(["git", "diff", "--name-only"], capture_output=True)
+    diff_untracked = run(["git", "ls-files", "--others", "--exclude-standard"], capture_output=True)
+    changes = {
+        "tracked": diff_tracked.splitlines() if diff_tracked else [],
+        "untracked": diff_untracked.splitlines() if diff_untracked else []
+    }
+    if not changes["tracked"] and not changes["untracked"]:
+        print("No changes to stash.")
+    else:
+        to_stash = questionary.checkbox(
+            "Select changes to stash:",
+            choices=changes["tracked"] + changes["untracked"],
+            instruction="(space to toggle, enter to confirm)",
+        ).ask()
+        if to_stash:
+            tracked = [f for f in to_stash if f in changes["tracked"]]
+            untracked = [f for f in to_stash if f in changes["untracked"]]
+            if tracked:
+                run(["git", "stash", "push", "-m", "gitophil stash", "--"] + tracked, shell=False)
+            if untracked:
+                run(["git", "stash", "push", "-m", "gitophil stash", "-u" , "--"] + untracked, shell=False)
+        else:
+            print("No changes selected for stashing.")
 
 def step_create_branch(branchname_future, use_ai):
     """Create and switch to a new branch from main."""
@@ -426,6 +453,12 @@ def main():
         branchname_future = executor.submit(lambda: "")
         commitmsg_future = executor.submit(lambda: "")
 
+    if "stash" in selected_steps:
+        """Let user select changes to stash using questionary, then stash them."""
+        step_stash()
+        branchname_future = executor.submit(generate_branchname)
+        commitmsg_future = executor.submit(generate_commitmessage)
+
     if "branch" in selected_steps:
         step_create_branch(branchname_future, use_ai)
 
@@ -461,6 +494,9 @@ def main():
 
     if "cleanup_branches" in selected_steps:
         step_cleanup_branches()
+    
+    if "stash" in selected_steps:
+        run(["git", "stash", "pop"], shell=False)
 
     print("\nDone!")
     executor.shutdown(wait=False)
