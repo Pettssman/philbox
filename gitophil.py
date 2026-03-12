@@ -20,20 +20,23 @@ FILE_PATH = Path(sys.executable).resolve() if getattr(sys, 'frozen', False) else
 CONFIG = {}
 
 # ─── Workflow presets ────────────────────────────────────────────────
-# Each preset maps to a set of step keys that will run automatically.
-DEFAULT_WORKFLOWS = {
-    "Full workflow, commit all":   ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"],
-    "Full workflow, stash":   ["stash", "branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main", "stash pop"],
-    "Full workflow, no AI":   ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"],
-    "Full workflow, draft PR":   ["branch", "commit", "rebase", "push", "create draft pr", "send webhook", "automerge", "switch to main"],
-    "Create branch, commit":   ["branch", "commit"],
-    "Commit only":     ["commit"],
-    "Push & PR":       ["push", "create pr", "send webhook"],
-    "Cleanup branches": ["cleanup_branches"],
-    "Custom":          [],   # user picks steps interactively
-}
 
-NO_AI_WORKFLOWS = {"Full workflow, no AI"}
+WORKFLOW_DEFAULTS = ["steps", "ai", "commit_mode"]
+
+def wf(name, steps, ai=True, commit_mode="all"):
+    """Build a workflow dict"""
+    return {"name": name, "steps": steps, "ai": ai, "commit_mode": commit_mode}
+
+DEFAULT_WORKFLOWS = [
+    wf("Full workflow, commit all",  ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"]),
+    wf("Full workflow, staged only", ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"], commit_mode="staged"),
+    wf("Full workflow, draft PR",    ["branch", "commit", "rebase", "push", "create draft pr", "send webhook", "automerge", "switch to main"]),
+    wf("Create branch, commit",      ["branch", "commit"]),
+    wf("Commit only",                ["commit"]),
+    wf("Push & PR",                  ["push", "create pr", "send webhook"]),
+    wf("Cleanup branches",           ["cleanup_branches"]),
+    wf("Custom",                     []),
+]
 
 AVAILABLE_GIT_OPERATIONS = {
     "stash":     "Stash changes, pop after execution",
@@ -48,6 +51,19 @@ AVAILABLE_GIT_OPERATIONS = {
     "switch to main": "Switch to main branch",
     "cleanup_branches": "Cleanup gone branches",
 }
+
+
+def load_workflows(config):
+    """Convert [[workflow]] array-of-tables into an ordered dict keyed by name."""
+    raw = config.get("workflow")
+    workflows = {}
+    for entry in raw:
+        name = entry["name"]
+        workflows[name] = {
+            k: entry.get(k) for k in WORKFLOW_DEFAULTS
+        }
+        workflows[name]["steps"] = entry.get("steps", [])
+    return workflows
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────
@@ -256,8 +272,8 @@ def step_create_branch(branchname_future, use_ai):
     run(["git", "switch", "-c", branchname], shell=False)
 
 
-def step_commit(commitmsg_future, use_ai):
-    """Stage all changes and commit with an AI-suggested message."""
+def step_commit(commitmsg_future, use_ai, commit_mode="all"):
+    """Stage and commit. commit_mode='all' stages everything; 'staged' commits only what's already staged."""
     run(["git", "status", "--short"], shell=False)
     if use_ai:
         commitmsg = wait_with_loading(commitmsg_future, "Loading AI commit message suggestion")
@@ -267,7 +283,8 @@ def step_commit(commitmsg_future, use_ai):
     if not commitmsg:
         print("Empty commit message, aborting.")
         os._exit(1)
-    run(["git", "add", "."])
+    if commit_mode == "all":
+        run(["git", "add", "."])
     run(["git", "commit", "-m", commitmsg], shell=False)
     return commitmsg
 
@@ -370,21 +387,23 @@ def step_cleanup_branches():
 # ─── Menu & orchestration ───────────────────────────────────────────
 
 def choose_workflow():
-    """Present the main menu and return the set of steps to execute."""
+    """Present the main menu and return the workflow dict + name."""
     current_branch = run(["git", "branch", "--show-current"], capture_output=True)
-    _workflows = CONFIG.get("Workflows", DEFAULT_WORKFLOWS)
+    _workflows = load_workflows(CONFIG)
     if current_branch != "main":
-        _workflows = {wf: steps for wf, steps in _workflows.items() if "branch" not in (steps or [])}
-    workflow = questionary.select(
+        _workflows = {k: v for k, v in _workflows.items() if "branch" not in v["steps"]}
+    name = questionary.select(
         "What would you like to do?",
         choices=list(_workflows),
         instruction="(arrow keys to move, enter to select)",
     ).ask()
 
-    if workflow is None:  # Ctrl-C
+    if name is None:  # Ctrl-C
         os._exit(0)
 
-    if workflow == "Custom":
+    wf = _workflows[name]
+
+    if name == "Custom":
         selected = questionary.checkbox(
             "Pick the steps to run:",
             choices=[
@@ -395,13 +414,14 @@ def choose_workflow():
         ).ask()
         if selected is None:
             os._exit(0)
-        return set(selected), workflow
+        wf["steps"] = selected
+        return wf, name
 
-    if "commit" in _workflows[workflow] and subprocess.run(["git", "diff", "--quiet"], capture_output=True).returncode == 0:
+    if "commit" in wf["steps"] and subprocess.run(["git", "diff", "--quiet"], capture_output=True).returncode == 0:
         print("No changes to commit, but 'commit' step was selected. Aborting.")
         os._exit(0)
 
-    return _workflows[workflow], workflow
+    return wf, name
 
 def num_commits():
     result = run(
@@ -417,9 +437,7 @@ def init_config():
         default_config = {
             "Name": name,
             "Webhook_URL": webhook_url,
-            "Workflows": DEFAULT_WORKFLOWS,
-            "No_AI_Workflows": list(NO_AI_WORKFLOWS),
-            "Available_Git_Operations": AVAILABLE_GIT_OPERATIONS,
+            "workflow": DEFAULT_WORKFLOWS,
         }
         with open(CONFIG_PATH, "wb") as f:
             tomli_w.dump(default_config, f)
@@ -443,9 +461,11 @@ def main():
     branchname_future = executor.submit(generate_branchname)
     commitmsg_future = executor.submit(generate_commitmessage)
 
-    selected_steps, workflow = choose_workflow()
-    use_ai = workflow not in NO_AI_WORKFLOWS
-    print(f"\nSteps: {', '.join(AVAILABLE_GIT_OPERATIONS[s] for s in selected_steps)}\n")
+    wf, wf_name = choose_workflow()
+    steps = wf["steps"]
+    use_ai = wf.get("ai", True)
+    commit_mode = wf.get("commit_mode", "all")
+    print(f"\nSteps: {', '.join(AVAILABLE_GIT_OPERATIONS[s] for s in steps)}\n")
 
     if not use_ai:
         branchname_future.cancel()
@@ -453,17 +473,16 @@ def main():
         branchname_future = executor.submit(lambda: "")
         commitmsg_future = executor.submit(lambda: "")
 
-    if "stash" in selected_steps:
-        """Let user select changes to stash using questionary, then stash them."""
+    if "stash" in steps:
         step_stash()
         branchname_future = executor.submit(generate_branchname)
         commitmsg_future = executor.submit(generate_commitmessage)
 
-    if "branch" in selected_steps:
+    if "branch" in steps:
         step_create_branch(branchname_future, use_ai)
 
-    if "commit" in selected_steps:
-        commitmsg = step_commit(commitmsg_future, use_ai)
+    if "commit" in steps:
+        commitmsg = step_commit(commitmsg_future, use_ai, commit_mode)
     elif run(["git", "branch", "--show-current"], capture_output=True) != "main":
         commitmsg = run(["git", "log", "-1", "--pretty=%s"], capture_output=True)
     else:
@@ -474,28 +493,28 @@ def main():
     else:
         pr_title_future = executor.submit(lambda: commitmsg)
 
-    if "rebase" in selected_steps:
+    if "rebase" in steps:
         step_rebase()
 
-    if "push" in selected_steps:
+    if "push" in steps:
         step_push()
 
-    if "create pr" in selected_steps:
-        draft = "create draft pr" in selected_steps
+    if "create pr" in steps:
+        draft = "create draft pr" in steps
         pr_link = step_create_pr(pr_title_future, draft=draft, use_ai=use_ai)
-        if not draft and "send webhook" in selected_steps:
+        if not draft and "send webhook" in steps:
             send_pr_notification(pr_link)
 
-    if "automerge" in selected_steps:
+    if "automerge" in steps:
         step_automerge()
     
-    if "switch to main" in selected_steps:
+    if "switch to main" in steps:
         step_switch_to_main()
 
-    if "cleanup_branches" in selected_steps:
+    if "cleanup_branches" in steps:
         step_cleanup_branches()
     
-    if "stash" in selected_steps:
+    if "stash" in steps:
         run(["git", "stash", "pop"], shell=False)
 
     print("\nDone!")
