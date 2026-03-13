@@ -21,15 +21,15 @@ CONFIG = {}
 
 # ─── Workflow presets ────────────────────────────────────────────────
 
-WORKFLOW_DEFAULTS = ["steps", "ai", "commit_mode"]
+WORKFLOW_DEFAULTS = ["steps", "ai"]
 
-def wf(name, steps, ai=True, commit_mode="all"):
+def wf(name, steps, ai=True):
     """Build a workflow dict"""
-    return {"name": name, "steps": steps, "ai": ai, "commit_mode": commit_mode}
+    return {"name": name, "steps": steps, "ai": ai}
 
 DEFAULT_WORKFLOWS = [
     wf("Full workflow, commit all",  ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"]),
-    wf("Full workflow, staged only", ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"], commit_mode="staged"),
+    wf("Full workflow, staged only", ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"]),
     wf("Full workflow, draft PR",    ["branch", "commit", "rebase", "push", "create draft pr", "send webhook", "automerge", "switch to main"]),
     wf("Create branch, commit",      ["branch", "commit"]),
     wf("Commit only",                ["commit"]),
@@ -62,9 +62,8 @@ def load_workflows(config):
         workflows[name] = {
             k: entry.get(k) for k in WORKFLOW_DEFAULTS
         }
-        workflows[name]["steps"] = entry.get("steps", [])
+        workflows[name]["steps"] = entry.get("steps")
     return workflows
-
 
 # ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -143,14 +142,23 @@ def wait_with_loading(future, message="Loading AI suggestion"):
     t.join()
     return result
 
-
-# ─── AI generation ───────────────────────────────────────────────────
-
-def generate_branchname():
-    full_diff = run(["git", "diff", "--unified=0"], capture_output=True)
+def get_diff(only_staged=False):
+    """Get the git diff based on setting only_staged in config. If only_staged is True, get the cached diff; otherwise get the full diff."""
+    if only_staged:
+        full_diff = run(["git", "diff", "--cached", "--unified=0"], capture_output=True)
+    else:
+        full_diff = run(["git", "diff", "--unified=0"], capture_output=True)
     if not full_diff:
         return ""
     diff = "\n".join(l for l in full_diff.splitlines() if l.startswith(("+", "-")))
+    return diff
+
+# ─── AI generation ───────────────────────────────────────────────────
+
+def generate_branchname(only_staged=False):
+    diff = get_diff(only_staged=only_staged)
+    if not diff:
+        return ""
     if not diff: 
         return ""
     prompt_text = f"""Role: Git branch name generator.
@@ -174,9 +182,10 @@ Output: branch name only, nothing else."""
     return result
 
 
-def generate_commitmessage():
-    full_diff = run(["git", "diff", "--unified=0"], capture_output=True)
-    diff = "\n".join(l for l in (full_diff or "").splitlines() if l.startswith(("+", "-")))
+def generate_commitmessage(only_staged=False):
+    diff = get_diff(only_staged=only_staged)
+    if not diff:
+        return ""
     prompt_text = f"""Role: Git commit message generator.
 
 Rules:
@@ -272,19 +281,30 @@ def step_create_branch(branchname_future, use_ai):
     run(["git", "switch", "-c", branchname], shell=False)
 
 
-def step_commit(commitmsg_future, use_ai, commit_mode="all"):
+def step_commit(commitmsg_future, use_ai, only_staged=False):
     """Stage and commit. commit_mode='all' stages everything; 'staged' commits only what's already staged."""
+    if only_staged and subprocess.run(["git", "diff", "--cached", "--quiet"], capture_output=True).returncode == 0:
+        print("No staged changes, aborting.")
+        os._exit(0)
+
+    if not only_staged and subprocess.run(["git", "diff", "--quiet"], capture_output=True).returncode == 0:
+        print("No changes to commit, but 'commit' step was selected. Aborting.")
+        os._exit(0)
+    
     run(["git", "status", "--short"], shell=False)
     if use_ai:
         commitmsg = wait_with_loading(commitmsg_future, "Loading AI commit message suggestion")
     else:
         commitmsg = commitmsg_future.result()
     commitmsg = prompt("Enter commit message: ", default=commitmsg)
+
     if not commitmsg:
         print("Empty commit message, aborting.")
-        os._exit(1)
-    if commit_mode == "all":
+        os._exit(0)
+
+    if not only_staged:
         run(["git", "add", "."])
+
     run(["git", "commit", "-m", commitmsg], shell=False)
     return commitmsg
 
@@ -417,9 +437,7 @@ def choose_workflow():
         wf["steps"] = selected
         return wf, name
 
-    if "commit" in wf["steps"] and subprocess.run(["git", "diff", "--quiet"], capture_output=True).returncode == 0:
-        print("No changes to commit, but 'commit' step was selected. Aborting.")
-        os._exit(0)
+    
 
     return wf, name
 
@@ -434,9 +452,11 @@ def init_config():
     if not CONFIG_PATH.exists():
         name = prompt("Enter your name (for PR notifications): ")
         webhook_url = prompt("Enter your Power Automate webhook URL (for PR notifications): ")
+        only_staged = questionary.confirm("Only commit staged changes?").ask()
         default_config = {
             "Name": name,
             "Webhook_URL": webhook_url,
+            "Only_commit_staged": only_staged,
             "workflow": DEFAULT_WORKFLOWS,
         }
         with open(CONFIG_PATH, "wb") as f:
@@ -456,15 +476,15 @@ def init_config():
 def main():
     init_config()
 
+    only_staged = CONFIG.get("Only_commit_staged", False)
     # Kick off AI suggestions in background for any steps that need them
     executor = ThreadPoolExecutor(max_workers=3)
-    branchname_future = executor.submit(generate_branchname)
-    commitmsg_future = executor.submit(generate_commitmessage)
+    branchname_future = executor.submit(generate_branchname, only_staged)
+    commitmsg_future = executor.submit(generate_commitmessage, only_staged)
 
     wf, wf_name = choose_workflow()
     steps = wf["steps"]
-    use_ai = wf.get("ai", True)
-    commit_mode = wf.get("commit_mode", "all")
+    use_ai = wf.get("ai")
     print(f"\nSteps: {', '.join(AVAILABLE_GIT_OPERATIONS[s] for s in steps)}\n")
 
     if not use_ai:
@@ -475,14 +495,14 @@ def main():
 
     if "stash" in steps:
         step_stash()
-        branchname_future = executor.submit(generate_branchname)
-        commitmsg_future = executor.submit(generate_commitmessage)
+        branchname_future = executor.submit(generate_branchname, only_staged)
+        commitmsg_future = executor.submit(generate_commitmessage, only_staged)
 
     if "branch" in steps:
         step_create_branch(branchname_future, use_ai)
 
     if "commit" in steps:
-        commitmsg = step_commit(commitmsg_future, use_ai, commit_mode)
+        commitmsg = step_commit(commitmsg_future, use_ai, only_staged)
     elif run(["git", "branch", "--show-current"], capture_output=True) != "main":
         commitmsg = run(["git", "log", "-1", "--pretty=%s"], capture_output=True)
     else:
