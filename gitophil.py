@@ -90,6 +90,9 @@ def run(command, capture_output=False, shell=False, input=None):
 
 def send_pr_notification(notification_text):
     """Send an adaptive card notification to Power Automate via webhook."""
+    if DEBUG:
+        print(f"[debug] would send webhook with text:\n{notification_text}")
+        return
     webhook_url = CONFIG.get("Webhook_URL")
     payload = {
         "attachments": [
