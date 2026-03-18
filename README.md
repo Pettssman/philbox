@@ -8,7 +8,8 @@ Gitophil is used as a git tool to create branches, commits and PRs. Copilot is i
 You will be asked to provide:
 1. Your name that is used for PR notification in Teams.
 2. A webhook URL that allows to publish a message in a Teams chat.
-3. If you want to create a git alias to be able to run using, for example ```git gitophil``` to launch the CLI
+3. If you want to commit all made changes or only what you have staged before running the script.
+4. If you want to create a git alias to be able to run using, for example ```git gitophil``` to launch the CLI.
 
 After the alias is created, the alias should be able to run in either powershell or git bash (as long as git is in your ```PATH```).
 
