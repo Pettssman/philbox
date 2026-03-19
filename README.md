@@ -5,7 +5,7 @@ Gitophil is used as a git tool to create branches, commits and PRs. Copilot is i
 3. Select the file in ```gitophil/dist/gitophil.exe``` in Windows file explorer and press ```ctrl+shift+c``` to copy the full path
 4. Open git bash and paste the path and press ```enter```
 
-You will be asked to provide:
+**You will be asked to provide:**
 1. Your name that is used for PR notification in Teams.
 2. A webhook URL that allows to publish a message in a Teams chat.
 3. If you want to commit all made changes or only what you have staged before running the script.
