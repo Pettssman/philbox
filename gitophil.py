@@ -28,14 +28,14 @@ def wf(name, steps, ai=True):
     return {"name": name, "steps": steps, "ai": ai}
 
 DEFAULT_WORKFLOWS = [
-    wf("Full workflow, commit all",  ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"]),
-    wf("Full workflow, staged only", ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"]),
-    wf("Full workflow, draft PR",    ["branch", "commit", "rebase", "push", "create draft pr", "send webhook", "automerge", "switch to main"]),
-    wf("Create branch, commit",      ["branch", "commit"]),
-    wf("Commit only",                ["commit"]),
-    wf("Push & PR",                  ["push", "create pr", "send webhook"]),
-    wf("Cleanup branches",           ["cleanup_branches"]),
-    wf("Custom",                     []),
+    wf("Full workflow",                 ["branch", "commit", "rebase", "push", "create pr", "send webhook", "automerge", "switch to main"]),
+    wf("Full workflow, draft PR",       ["branch", "commit", "rebase", "push", "create draft pr", "send webhook", "automerge", "switch to main"]),
+    wf("Create branch, commit",         ["branch", "commit"]),
+    wf("Commit only",                   ["commit"]),
+    wf("Push & PR",                     ["push", "create pr", "send webhook"]),
+    wf("Commit & push",                 ["commit", "push"]),
+    wf("Cleanup branches",              ["cleanup_branches"]),
+    wf("Custom",                        []),
 ]
 
 AVAILABLE_GIT_OPERATIONS = {
@@ -153,7 +153,10 @@ def get_diff(only_staged=False):
         full_diff = run(["git", "diff", "--unified=0"], capture_output=True)
     if not full_diff:
         return ""
-    diff = "\n".join(l for l in full_diff.splitlines() if l.startswith(("+", "-")))
+    diff = "\n".join(
+        l for l in full_diff.splitlines()
+        if l.startswith(("diff --git", "@@", "+", "-"))
+    )
     return diff
 
 # ─── AI generation ───────────────────────────────────────────────────
@@ -161,8 +164,6 @@ def get_diff(only_staged=False):
 def generate_branchname(only_staged=False):
     diff = get_diff(only_staged=only_staged)
     if not diff:
-        return ""
-    if not diff: 
         return ""
     prompt_text = f"""Role: Git branch name generator.
 
@@ -211,7 +212,7 @@ Output: commit message only, nothing else."""
 
 
 def generate_pr_title():
-    full_diff = run(["git", "diff", "main...", "--unified=0"], capture_output=True)
+    full_diff = run(["git", "diff", "origin/main...", "--unified=0"], capture_output=True)
     if not full_diff:  
         return ""
     diff = "\n".join(l for l in full_diff.splitlines() if l.startswith(("+", "-")))
@@ -279,8 +280,9 @@ def step_create_branch(branchname_future, use_ai):
     else:
         branchname_cp = branchname_future.result()
     branchname = prompt("Enter branch name: ", default=branchname_cp)
-    if not branchname.startswith("philip/"):
-        branchname = f"philip/{branchname}"
+    name = CONFIG.get("Name", "foo").lower()
+    if not branchname.startswith(f"{name}/"):
+        branchname = f"{name}/{branchname}"
     run(["git", "switch", "-c", branchname], shell=False)
 
 
@@ -453,7 +455,7 @@ def num_commits():
 def init_config():
     """Check for config file and create with prompts if not found."""
     if not CONFIG_PATH.exists():
-        name = prompt("Enter your name (for PR notifications): ")
+        name = prompt("Enter your name (for branch name and PR notifications): ")
         webhook_url = prompt("Enter your Power Automate webhook URL (for PR notifications): ")
         only_staged = questionary.confirm("Only commit staged changes?").ask()
         default_config = {
